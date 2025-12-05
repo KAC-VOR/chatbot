@@ -11,8 +11,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories.streamlit import StreamlitChatMessageHistory
 from openai import OpenAI
@@ -33,8 +33,11 @@ Use the following pieces of retrieved context to answer the question. \
 Please say answer only based pieces of retrieved context.\
 If you don't know the answers, Please say you don't know. \
 Keep the answer perfect. please use imogi with the answer.\
-대답은 한국어로 하고, 존댓말을 써줘.\
-{context}"""
+대답은 한국어로 하고, 존댓말을 써줘.
+
+Context: {context}
+
+Question: {input}"""
 
 
 # ============ 유틸리티 함수 ============
@@ -46,24 +49,45 @@ def get_embeddings():
     return OpenAIEmbeddings(model=EMBEDDING_MODEL)
 
 
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+
 def create_rag_chain(retriever, model: str):
+    llm = ChatOpenAI(model=model, temperature=0)
+    
+    # 히스토리 기반 질문 재구성
     contextualize_q_prompt = ChatPromptTemplate.from_messages([
         ("system", CONTEXTUALIZE_PROMPT),
         MessagesPlaceholder("history"),
         ("human", "{input}"),
     ])
     
+    contextualize_chain = contextualize_q_prompt | llm | StrOutputParser()
+    
+    # QA 체인
     qa_prompt = ChatPromptTemplate.from_messages([
         ("system", QA_PROMPT),
         MessagesPlaceholder("history"),
         ("human", "{input}"),
     ])
     
-    llm = ChatOpenAI(model=model, temperature=0)
-    history_aware_retriever = create_history_aware_retriever(llm, retriever, contextualize_q_prompt)
-    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+    def get_context(input_dict):
+        if input_dict.get("history"):
+            question = contextualize_chain.invoke(input_dict)
+        else:
+            question = input_dict["input"]
+        docs = retriever.invoke(question)
+        return format_docs(docs)
     
-    return create_retrieval_chain(history_aware_retriever, question_answer_chain)
+    rag_chain = (
+        RunnablePassthrough.assign(context=get_context)
+        | qa_prompt
+        | llm
+        | StrOutputParser()
+    )
+    
+    return rag_chain
 
 
 # ============ 벡터스토어 관련 ============
@@ -112,7 +136,6 @@ def handle_rag_chat(rag_chain, chat_history):
         lambda _: chat_history,
         input_messages_key="input",
         history_messages_key="history",
-        output_messages_key="answer",
     )
     
     render_chat_history(chat_history)
@@ -124,7 +147,7 @@ def handle_rag_chat(rag_chain, chat_history):
                 {"input": prompt},
                 {"configurable": {"session_id": "any"}}
             )
-            st.write(response["answer"])
+            st.write(response)
 
 
 def handle_chatgpt_mode(model: str):
