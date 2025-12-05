@@ -3,9 +3,8 @@ langchain
 langchain-community
 langchain-openai
 langchain-core
-langchain-chroma
-pypdf
 langchain-text-splitters
-tiktoken
-protobuf==3.20.3
+pypdf
+chromadb
+openai
 pysqlite3-binary
